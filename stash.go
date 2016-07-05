@@ -134,6 +134,7 @@ type (
 
 	PullRequest struct {
 		ID          int    `json:"id"`
+		Version     int    `json:"version"`
 		Closed      bool   `json:"closed"`
 		Open        bool   `json:"open"`
 		State       string `json:"state"`
@@ -181,15 +182,15 @@ type (
 
 	PullRequestRef struct {
 		Id         string                `json:"id"`
-		Repository PullRequestRepository `json:"repository"`
+		Repository PullRequestRepository `json:"repository,omitempty"`
 	}
 
 	PullRequestResource struct {
-		Title       string         `json:"title"`
-		Description string         `json:"description"`
-		FromRef     PullRequestRef `json:"fromRef"`
-		ToRef       PullRequestRef `json:"toRef"`
-		Reviewers   []Reviewer     `json:"reviewers"`
+		Title       string         `json:"title,omitempty"`
+		Description string         `json:"description,omitempty"`
+		FromRef     PullRequestRef `json:"fromRef,omitempty"`
+		ToRef       PullRequestRef `json:"toRef,omitempty"`
+		Reviewers   []Reviewer     `json:"reviewers,omitempty"`
 	}
 
 	CommentResource struct {
@@ -800,6 +801,70 @@ func (client Client) CreatePullRequest(projectKey, repositorySlug, title, descri
 	}
 
 	req, err := http.NewRequest("POST", fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/pull-requests", client.baseURL.String(), projectKey, repositorySlug), bytes.NewBuffer(reqBody))
+	if err != nil {
+		return PullRequest{}, err
+	}
+
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-type", "application/json")
+	req.SetBasicAuth(client.userName, client.password)
+
+	responseCode, data, err := consumeResponse(req)
+	if err != nil {
+		return PullRequest{}, err
+	}
+	if responseCode != http.StatusCreated {
+		var reason string = "unknown reason"
+		switch {
+		case responseCode == http.StatusBadRequest:
+			reason = "The pull-request was not created due to a validation error."
+		case responseCode == http.StatusUnauthorized:
+			reason = "The currently authenticated user has insufficient permissions to create a pull-request."
+		case responseCode == http.StatusNotFound:
+			reason = "The resource was not found.  Does the project key exist?"
+		case responseCode == http.StatusConflict:
+			reason = "A pull-request with same name already exists."
+		}
+		return PullRequest{}, errorResponse{StatusCode: responseCode, Reason: reason}
+	}
+
+	var t PullRequest
+	err = json.Unmarshal(data, &t)
+	if err != nil {
+		return PullRequest{}, err
+	}
+
+	return t, nil
+}
+
+// UpdatePullRequest update a pull request.
+func (client Client) UpdatePullRequest(
+	pullRequest PullRequest,
+	title, description, toRef string, reviewers []string,
+) (PullRequest, error) {
+
+	var revs []Reviewer
+	for _, rev := range reviewers {
+		revs = append(revs, Reviewer{
+			User: User{Name: rev},
+		})
+	}
+
+	pullRequestResource := PullRequestResource{
+		Title:       title,
+		Description: description,
+		ToRef: PullRequestRef{
+			Id: toRef,
+		},
+		Reviewers: revs,
+	}
+
+	reqBody, err := json.Marshal(pullRequestResource)
+	if err != nil {
+		return PullRequest{}, err
+	}
+
+	req, err := http.NewRequest("PUT", fmt.Sprintf("%s/rest/api/1.0/projects/%s/repos/%s/pull-requests", client.baseURL.String(), projectKey, repositorySlug), bytes.NewBuffer(reqBody))
 	if err != nil {
 		return PullRequest{}, err
 	}
