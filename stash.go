@@ -6,13 +6,13 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"runtime"
 	"strings"
 	"time"
 
@@ -160,6 +160,14 @@ type (
 		StatusCode int
 		Reason     string
 		error
+	}
+
+	stashError struct {
+		Errors []struct {
+			Context       string `json:"context"`
+			Message       string `json:"message"`
+			ExceptionName string `json:"exceptionName"`
+		} `json:"errors"`
 	}
 
 	// Pull Request Types
@@ -1124,28 +1132,33 @@ func IsRepositoryNotFound(err error) bool {
 
 func consumeResponse(req *http.Request) (rc int, buffer []byte, err error) {
 	response, err := httpClient.Do(req)
-
-	defer func() {
-		if response != nil && response.Body != nil {
-			response.Body.Close()
-		}
-		if e := recover(); e != nil {
-			trace := make([]byte, 10*1024)
-			_ = runtime.Stack(trace, false)
-			Log.Printf("%s", trace)
-			err = fmt.Errorf("%v", e)
-		}
-	}()
-
 	if err != nil {
-		panic(err)
+		return 0, nil, err
 	}
 
-	if data, err := ioutil.ReadAll(response.Body); err != nil {
-		panic(err)
-	} else {
-		return response.StatusCode, data, nil
+	data, err := ioutil.ReadAll(response.Body)
+	if err != nil {
+		return 0, nil, err
 	}
+
+	defer response.Body.Close()
+
+	// try to check that response contains any errors
+	if response.StatusCode >= 400 {
+		var errResponse stashError
+		err = json.Unmarshal(data, &errResponse)
+		if err == nil && len(errResponse.Errors) > 0 {
+			messages := []string{}
+			for _, err := range errResponse.Errors {
+				messages = append(messages, err.Message)
+			}
+
+			return response.StatusCode, data,
+				errors.New(strings.Join(messages, " "))
+		}
+	}
+
+	return response.StatusCode, data, nil
 }
 
 // SshUrl extracts the SSH-based URL from the repository metadata.
